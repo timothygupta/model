@@ -8,23 +8,34 @@ import pickle
 st.title("Employee Attrition Prediction (Single + Batch)")
 
 # Try to load the trained model (supports joblib or pickle files)
-MODEL_PATH = "model.pkl"
+# Prefer the exact model filename you used when training, fall back to common names
+MODEL_CANDIDATES = ["random_forest_model.pkl", "model.pkl", "random_forest_model.joblib", "model.joblib"]
 model = None
-if os.path.exists(MODEL_PATH):
-    try:
-        model = joblib.load(MODEL_PATH)
-    except Exception:
+found_model = None
+for mpath in MODEL_CANDIDATES:
+    if os.path.exists(mpath):
         try:
-            with open(MODEL_PATH, "rb") as f:
-                model = pickle.load(f)
-        except Exception as e:
-            st.error(f"Failed to load model from {MODEL_PATH}: {e}")
+            model = joblib.load(mpath)
+            found_model = mpath
+            break
+        except Exception:
+            try:
+                with open(mpath, "rb") as f:
+                    model = pickle.load(f)
+                    found_model = mpath
+                    break
+            except Exception:
+                model = None
+
+if model is None:
+    st.error(f"Model file not found or failed to load. Checked: {MODEL_CANDIDATES}")
 else:
-    st.error(f"Model file not found at {MODEL_PATH}")
+    st.info(f"Loaded model from: {found_model}")
 
 # Optionally load a scaler if present (used at training time)
 scaler = None
-for candidate in ["standard_scaler.pkl", "standard_scaler.joblib", "scaler.pkl", "scaler.joblib", "standard_scaler"]:
+SCALER_CANDIDATES = ["standard_scaler.pkl", "standard_scaler.joblib", "scaler.pkl", "scaler.joblib"]
+for candidate in SCALER_CANDIDATES:
     if os.path.exists(candidate):
         try:
             scaler = joblib.load(candidate)
@@ -36,6 +47,11 @@ for candidate in ["standard_scaler.pkl", "standard_scaler.joblib", "scaler.pkl",
                     break
             except Exception:
                 scaler = None
+
+if scaler is not None:
+    st.info("Scaler loaded for feature scaling")
+else:
+    st.info("No scaler found; predictions will proceed without scaling")
 
 # CSV path used earlier for schema and defaults
 DF_PATH = "EmployeeData_preprocessed.csv"
@@ -131,36 +147,32 @@ if upload_file is not None:
         uploaded_df = None
 
     if uploaded_df is not None:
-        # Preprocess uploaded dataframe the same way as batch handler
+        # Use your provided prediction flow: drop, engineered features, reorder, scale, predict
         drop_cols = ['Attrition', 'Over18', 'EmployeeCount', 'EmployeeNumber', 'StandardHours']
-        uploaded_df = uploaded_df.drop(columns=[c for c in drop_cols if c in uploaded_df.columns], errors='ignore')
+        uploaded_df = uploaded_df.drop(columns=[col for col in drop_cols if col in uploaded_df.columns], errors='ignore')
 
-        # Ensure one-hot columns exist
-        for col in onehot_cols:
-            if col not in uploaded_df.columns:
-                uploaded_df[col] = 0
-
-        # Add engineered features
+        # Add engineered features (function defined above)
         uploaded_df = add_engineered_features(uploaded_df)
 
-        # Ensure all training feature columns exist and are in the right order
+        # Ensure the exact feature columns (add missing with 0)
         for col in feature_columns:
             if col not in uploaded_df.columns:
                 uploaded_df[col] = 0
-        uploaded_df = uploaded_df[feature_columns]
 
-        # Scale if scaler available
-        X = uploaded_df.copy()
+        # Arrange columns in the exact order expected by the model
+        df_pred = uploaded_df[feature_columns]
+
+        # Scale features if scaler present
         if scaler is not None:
             try:
-                X_scaled = scaler.transform(X)
+                X_scaled = scaler.transform(df_pred)
             except Exception as e:
                 st.warning(f"Scaler transform failed: {e} — proceeding without scaling")
-                X_scaled = X.values
+                X_scaled = df_pred.values
         else:
-            X_scaled = X.values
+            X_scaled = df_pred.values
 
-        # Predict
+        # Predict using the loaded model
         if model is None:
             st.error('Model is not loaded; cannot predict.')
         else:
@@ -168,16 +180,16 @@ if upload_file is not None:
                 preds = model.predict(X_scaled)
                 probs = model.predict_proba(X_scaled)[:, 1] if hasattr(model, 'predict_proba') else None
 
-                result_df = uploaded_df.copy()
-                result_df['Predicted_Attrition'] = preds
+                out = uploaded_df.copy()
+                out['Predicted_Attrition'] = preds
                 if probs is not None:
-                    result_df['Attrition_Probability'] = probs
+                    out['Attrition_Probability'] = probs
 
-                st.success(f"Prediction complete for {len(result_df)} rows. Showing top 5 rows:")
+                st.success(f"Prediction complete for {len(out)} rows. Showing top 5 rows:")
                 show_cols = ['Predicted_Attrition'] + (['Attrition_Probability'] if probs is not None else [])
-                st.dataframe(result_df[show_cols].head())
+                st.dataframe(out[show_cols].head())
 
-                csv_out = result_df.to_csv(index=False).encode('utf-8')
+                csv_out = out.to_csv(index=False).encode('utf-8')
                 st.download_button("Download prediction CSV", csv_out, "attrition_predictions.csv")
             except Exception as e:
                 st.error(f"Model prediction failed: {e}")
