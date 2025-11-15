@@ -1,4 +1,4 @@
-]import os
+import os
 import streamlit as st
 import joblib
 import numpy as np
@@ -217,4 +217,5 @@ if upload_file is not None:
                 st.download_button("Download prediction CSV", csv_out, "attrition_predictions.csv")
             except Exception as e:
                 st.error(f"Model prediction failed: {e}")
+
 
