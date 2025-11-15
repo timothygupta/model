@@ -1,11 +1,13 @@
-import os
+]import os
 import streamlit as st
 import joblib
 import numpy as np
 import pandas as pd
 import pickle
 
-st.title("Employee Attrition Prediction (Single + Batch)")
+st.set_page_config(page_title="Employee Attrition Predictor", layout="wide", initial_sidebar_state="expanded")
+st.title("Employee Attrition Prediction")
+st.markdown("#### Upload a CSV (single row or batch) to predict employee attrition — results are downloadable.")
 
 # Try to load the trained model (supports joblib or pickle files)
 # Prefer the exact model filename you used when training, fall back to common names
@@ -28,9 +30,9 @@ for mpath in MODEL_CANDIDATES:
                 model = None
 
 if model is None:
-    st.error(f"Model file not found or failed to load. Checked: {MODEL_CANDIDATES}")
+    model_status = "Not loaded"
 else:
-    st.info(f"Loaded model from: {found_model}")
+    model_status = f"Loaded: {found_model}"
 
 # Optionally load a scaler if present (used at training time)
 scaler = None
@@ -48,10 +50,17 @@ for candidate in SCALER_CANDIDATES:
             except Exception:
                 scaler = None
 
-if scaler is not None:
-    st.info("Scaler loaded for feature scaling")
-else:
-    st.info("No scaler found; predictions will proceed without scaling")
+scaler_status = "Loaded" if scaler is not None else "None"
+
+# Top status row
+top_col1, top_col2, top_col3 = st.columns([3, 1, 1])
+with top_col1:
+    st.write("---")
+    st.markdown("**About**: This app preprocesses uploaded `EmployeeData_preprocessed.csv` rows to match the model's training features (one-hot + engineered features), scales them if a scaler is available, and returns attrition predictions.")
+with top_col2:
+    st.metric("Model", model_status)
+with top_col3:
+    st.metric("Scaler", scaler_status)
 
 # CSV path used earlier for schema and defaults
 DF_PATH = "EmployeeData_preprocessed.csv"
@@ -185,9 +194,24 @@ if upload_file is not None:
                 if probs is not None:
                     out['Attrition_Probability'] = probs
 
-                st.success(f"Prediction complete for {len(out)} rows. Showing top 5 rows:")
-                show_cols = ['Predicted_Attrition'] + (['Attrition_Probability'] if probs is not None else [])
-                st.dataframe(out[show_cols].head())
+                st.success(f"Prediction complete for {len(out)} rows.")
+                # Show summary metrics
+                n = len(out)
+                avg_prob = None
+                if probs is not None:
+                    try:
+                        avg_prob = float(out['Attrition_Probability'].mean())
+                    except Exception:
+                        avg_prob = None
+
+                mcol1, mcol2, mcol3 = st.columns([1, 1, 6])
+                mcol1.metric("Rows", f"{n}")
+                if avg_prob is not None:
+                    mcol2.metric("Avg Attrition Prob", f"{avg_prob:.2%}")
+                with mcol3:
+                    st.markdown("**Top predictions**")
+                    show_cols = ['Predicted_Attrition'] + (['Attrition_Probability'] if probs is not None else [])
+                    st.dataframe(out[show_cols].head())
 
                 csv_out = out.to_csv(index=False).encode('utf-8')
                 st.download_button("Download prediction CSV", csv_out, "attrition_predictions.csv")
