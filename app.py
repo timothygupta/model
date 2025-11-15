@@ -118,97 +118,67 @@ def add_engineered_features(df_):
 st.write("Using CSV schema from:", DF_PATH)
 
 # --- UI: Single prediction inputs ---
-st.header("Single Employee Prediction")
-user_input = {}
+st.header("Upload CSV for Prediction (replaces manual inputs)")
 
-# numeric inputs: use CSV medians as defaults and shift slightly
-for f in num_inputs:
-    default = 1
-    if f in df.columns and not df[f].dropna().empty:
-        med = df[f].median()
-        # choose a default slightly different from the median
-        default = int(med) + (1 if med >= 0 else 0)
-    # step and format heuristic
-    step = 1
-    user_input[f] = st.number_input(f, value=default, step=step, key=f"inp_{f}")
+# Allow the user to upload a CSV with one or more employees; this replaces manual fields input
+upload_file = st.file_uploader("Upload CSV for prediction (single or multiple rows)", type=["csv"], key="single_csv")
 
-# categorical inputs: choose options and default slightly different from mode when possible
-for f, options in cat_inputs.items():
-    default_idx = 0
-    if f in df.columns:
-        mode = df[f].mode().iat[0] if not df[f].mode().empty else None
-        # pick first option different from mode
-        for i, opt in enumerate(options):
-            if str(opt) != str(mode):
-                default_idx = i
-                break
-    user_input[f] = st.selectbox(f, options, index=default_idx, key=f"inp_{f}")
+if upload_file is not None:
+    try:
+        uploaded_df = pd.read_csv(upload_file)
+    except Exception as e:
+        st.error(f"Failed to read uploaded CSV: {e}")
+        uploaded_df = None
 
+    if uploaded_df is not None:
+        # Preprocess uploaded dataframe the same way as batch handler
+        drop_cols = ['Attrition', 'Over18', 'EmployeeCount', 'EmployeeNumber', 'StandardHours']
+        uploaded_df = uploaded_df.drop(columns=[c for c in drop_cols if c in uploaded_df.columns], errors='ignore')
 
-# Prepare a row dict and one-hot encode as in training
-row = dict(user_input)
-for col in onehot_cols:
-    row[col] = 0
+        # Ensure one-hot columns exist
+        for col in onehot_cols:
+            if col not in uploaded_df.columns:
+                uploaded_df[col] = 0
 
-# Map selected user inputs to one-hot columns exactly like training code
-if user_input.get('BusinessTravel') and user_input['BusinessTravel'] != 'Non-Travel':
-    row[f"BusinessTravel_{user_input['BusinessTravel']}"] = 1
-if user_input.get('Department') and user_input['Department'] != 'Human Resources':
-    row[f"Department_{user_input['Department']}"] = 1
-if user_input.get('EducationField') and user_input['EducationField'] != 'Human Resources':
-    row[f"EducationField_{user_input['EducationField']}"] = 1
-if user_input.get('Gender') and user_input['Gender'] == 'Male':
-    row['Gender_Male'] = 1
-if user_input.get('JobRole') and user_input['JobRole'] != 'Manager':
-    row[f"JobRole_{user_input['JobRole']}"] = 1
-if user_input.get('MaritalStatus') and user_input['MaritalStatus'] != 'Divorced':
-    row[f"MaritalStatus_{user_input['MaritalStatus']}"] = 1
-if user_input.get('OverTime') and user_input['OverTime'] == 'Yes':
-    row['OverTime_Yes'] = 1
+        # Add engineered features
+        uploaded_df = add_engineered_features(uploaded_df)
 
-# Ensure numeric types for numeric inputs
-for f in num_inputs:
-    row[f] = float(row.get(f, 0))
+        # Ensure all training feature columns exist and are in the right order
+        for col in feature_columns:
+            if col not in uploaded_df.columns:
+                uploaded_df[col] = 0
+        uploaded_df = uploaded_df[feature_columns]
 
-# Ensure all feature columns are present (fill missing with 0)
-for col in feature_columns:
-    if col not in row:
-        row[col] = 0
-
-# Construct DataFrame, add engineered features, reorder to match training
-single_df = pd.DataFrame([row])
-single_df = add_engineered_features(single_df)
-for col in feature_columns:
-    if col not in single_df.columns:
-        single_df[col] = 0
-single_df = single_df[feature_columns]
-
-if st.button('Predict for This Employee'):
-    if model is None:
-        st.error('Model is not loaded; cannot predict.')
-    else:
-        X = single_df.values
-        # If a scaler was available, apply it (training used scaling)
+        # Scale if scaler available
+        X = uploaded_df.copy()
         if scaler is not None:
             try:
-                X = scaler.transform(single_df)
+                X_scaled = scaler.transform(X)
             except Exception as e:
                 st.warning(f"Scaler transform failed: {e} — proceeding without scaling")
-                X = single_df.values
+                X_scaled = X.values
+        else:
+            X_scaled = X.values
 
-        # Validate shape matches model expectation where possible
-        try:
-            pred = model.predict(X)[0]
-            prob = None
-            if hasattr(model, 'predict_proba'):
-                try:
-                    prob = model.predict_proba(X)[0][1]
-                except Exception:
-                    prob = None
-            st.subheader("Result")
-            st.write(f"*Predicted Attrition:* {'Yes' if pred == 1 else 'No'}")
-            if prob is not None:
-                st.write(f"*Probability of Attrition:* {prob:.2%}")
-        except Exception as e:
-            st.error(f"Model prediction failed: {e}")
+        # Predict
+        if model is None:
+            st.error('Model is not loaded; cannot predict.')
+        else:
+            try:
+                preds = model.predict(X_scaled)
+                probs = model.predict_proba(X_scaled)[:, 1] if hasattr(model, 'predict_proba') else None
+
+                result_df = uploaded_df.copy()
+                result_df['Predicted_Attrition'] = preds
+                if probs is not None:
+                    result_df['Attrition_Probability'] = probs
+
+                st.success(f"Prediction complete for {len(result_df)} rows. Showing top 5 rows:")
+                show_cols = ['Predicted_Attrition'] + (['Attrition_Probability'] if probs is not None else [])
+                st.dataframe(result_df[show_cols].head())
+
+                csv_out = result_df.to_csv(index=False).encode('utf-8')
+                st.download_button("Download prediction CSV", csv_out, "attrition_predictions.csv")
+            except Exception as e:
+                st.error(f"Model prediction failed: {e}")
 
